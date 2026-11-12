@@ -67,11 +67,6 @@ with st.sidebar:
         "3. Click **Download report**."
     )
     st.divider()
-    with st.expander("Conversion factors (pcs per kg)", expanded=False):
-        st.caption("Used for the *can make cases* sheet. Taken from the Conversion Round Off chart.")
-        conversions = {}
-        for k, v in C.DEFAULT_CONVERSIONS.items():
-            conversions[k] = st.number_input(k, min_value=1, value=int(v), step=10, key=f"conv_{k}")
     st.divider()
     st.caption("Remarks rules")
     st.markdown(
@@ -221,7 +216,7 @@ with tab_checks:
         st.success("No data issues found.")
     else:
         st.caption("These do not stop the report; they show where the inputs did not match cleanly. "
-                   "The same list is in the 'Validation' sheet of the Excel file.")
+                   "They are shown here only; the downloaded report contains just the report sheets.")
         st.dataframe(issues, hide_index=True, width="stretch", height=480)
 
 with tab_info:
@@ -230,7 +225,7 @@ with tab_info:
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
-xlsx = report.to_excel(remarks=st.session_state["remarks"], conversions=conversions)
+xlsx = report.to_excel(remarks=st.session_state["remarks"])
 download_slot.download_button(
     "⬇️ Download report",
     data=xlsx,

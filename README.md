@@ -14,15 +14,15 @@ check the preview, optionally change a remark, and download the Excel file.
 
 ## Output workbook
 
+Same sheets and layout as the manually prepared report:
+
 | Sheet | Contents |
 |---|---|
-| **Tag & Env Stock** | Same layout as the manual report: date in A1, Brand / Constanta / C250 / MD20 / Perfecta / MD20 HS / Maisa / Perfecta-PK45 Tag columns, yellow spacer columns, Remarks, `TOTAL` (SUBTOTAL formulas) and `Grand Total`, frozen panes at B4, filter on the Remarks column. Tags shared by several blends (e.g. `TAG GV FLAVOUR DC C250 TBGS`, `TAG BARISSIMO DC PTAG TBGS`) are shown once in a cell merged across those blends. |
-| **Env & Tag Stock** | Can-make cases: kg (linked to the first sheet) × conversion factor (row 4, from the *Conversion Round Off* chart) ÷ pieces per CFC (from the BOM), *Max Can Make* per machine line and a total. |
+| **Tag & Env Stock** | Date in A1; Brand / Constanta / C250 / MD20 / Perfecta / MD20 HS / Maisa / Perfecta-PK45 Tag columns with yellow spacer columns; Remarks; `TOTAL` (SUBTOTAL formulas) and `Grand Total`; panes frozen at B4; filter on the Remarks column. Tags shared by several blends (e.g. `TAG GV FLAVOUR DC C250 TBGS`) are shown once in a cell merged across those blends. |
 | **Ghana & AB & AG Stock** | Ghana, Abidjan and Angola stock with totals and grand total. |
-| **Validation** | Every data issue found (see below). |
 
-All formulas are written together with their calculated values, so the numbers show correctly even
-in viewers that do not recalculate (phone previews, mail attachments).
+Formulas are written together with their calculated values, so numbers show correctly even in
+viewers that do not recalculate.
 
 ## Business rules
 
@@ -56,13 +56,12 @@ go to the *Ghana & AB & AG Stock* sheet instead of the main sheet.
 The difference between *Running* and *Order Received* depends on the shop-floor plan, which is not in
 the three files, so any remark can be changed in the preview before downloading.
 
-## Data checks (Validation sheet / *Data checks* tab)
+## Data checks (*Data checks* tab in the app, not in the Excel file)
 
 * items whose machine line is unknown (left out, with their kg)
 * duplicate items in the Stock Summary (quantities added) and negative stock
 * several stock items combined in one cell
 * order FGs missing from the BOM (matched by blend name where possible, otherwise listed)
-* items with no pack size in the BOM (can-make left at 0)
 * reconciliation: total envelope/tag kg in the Stock Summary must equal the kg placed in the report
 
 ## Run locally
@@ -88,8 +87,7 @@ Tests: `python -m pytest -q`
 ## Changing the rules
 
 Everything a planner may want to change is in [`tag_env/config.py`](tag_env/config.py): machine-line
-mapping, conversion factors, export sections and extra export items, and the words stripped to build
-the family key. The conversion factors can also be changed per run in the app sidebar.
+mapping, export sections and extra export items, and the words stripped to build the family key.
 
 ## Project layout
 

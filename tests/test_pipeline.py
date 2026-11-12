@@ -137,7 +137,7 @@ def test_export_and_checks(report):
 def test_excel_layout(report):
     data = report.to_excel(remarks={"KHAIMA MANGO": "Yet to Plan"})
     wb = openpyxl.load_workbook(io.BytesIO(data))
-    assert wb.sheetnames == ["Tag & Env Stock", "Env & Tag Stock", "Ghana & AB & AG Stock", "Validation"]
+    assert wb.sheetnames == ["Tag & Env Stock", "Ghana & AB & AG Stock"]
     ws = wb["Tag & Env Stock"]
     assert [ws[c].value for c in ("A2", "B2", "D2", "G2", "J2", "L2", "O2", "R2", "S2")] == \
         ["Brand", "Constanta", "C250", "MD20", "Perfecta ", "MD20 HS", "Maisa", "Perfecta/PK45 Tag", "Remarks"]

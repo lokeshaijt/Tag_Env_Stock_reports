@@ -391,9 +391,7 @@ def build_workbook(report, remarks: dict[str, str] | None = None,
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
     F = _Fmt(wb)
     _write_main(wb, F, report, remarks)
-    _write_can_make(wb, F, report, remarks, conv)
     _write_export(wb, F, report)
-    _write_validation(wb, F, report)
     wb.close()
     return buf.getvalue()
 
