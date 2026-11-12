@@ -14,9 +14,8 @@ import streamlit as st
 
 from tag_env import config as C
 from tag_env.pipeline import build_report
-from tag_env.readers import (KIND_BOM, KIND_LABELS, KIND_ORDER, KIND_PREVIOUS, KIND_STOCK,
-                             InputError, identify, read_exploded_bom, read_order_status,
-                             read_previous_remarks, read_stock_summary)
+from tag_env.readers import (KIND_BOM, KIND_LABELS, KIND_ORDER, KIND_STOCK, InputError,
+                             identify, read_exploded_bom, read_order_status, read_stock_summary)
 
 st.set_page_config(page_title="Tag & Env Stock Report", page_icon="📦", layout="wide")
 
@@ -44,11 +43,6 @@ def _bom(data: bytes):
     return read_exploded_bom(data)
 
 
-@st.cache_data(show_spinner=False, max_entries=6)
-def _previous(data: bytes):
-    return read_previous_remarks(data)
-
-
 def _digest(*parts: bytes | None) -> str:
     h = hashlib.sha1()
     for p in parts:
@@ -68,7 +62,7 @@ st.write(
 with st.sidebar:
     st.header("How to use")
     st.markdown(
-        "1. Drag the three Excel files into the upload box (any order).\n"
+        "1. Upload each report in its own box: Stock Summary, Order Status, Exploded BOM.\n"
         "2. Check the preview and, if needed, change a **Remarks** value.\n"
         "3. Click **Download report**."
     )
@@ -85,58 +79,50 @@ with st.sidebar:
         "- **Order Received** – open order still to produce, nothing made yet\n"
         "- **Multiline Stock** – nothing to produce; stock on 2+ envelope lines\n"
         "- **Leftover Stock** – nothing to produce\n\n"
-        "Add last week's report to keep the planner's Running / Order Received choice."
+        "Any remark can be changed in the preview before downloading."
     )
 
 # ---------------------------------------------------------------------------
-# Upload
+# Upload - one box per input report
 # ---------------------------------------------------------------------------
-uploads = st.file_uploader(
-    "Drop the input reports here (.xlsx / .xls)",
-    type=["xlsx", "xls", "xlsm"],
-    accept_multiple_files=True,
-    help="Stock Summary Report, Order Status Report and Exploded BOM Report. "
-         "Optionally also the previous Tag & Env Stock report.",
-)
-
+SLOTS = [
+    (KIND_STOCK, "1. Stock Summary Report", "e.g. StockSummaryReport-COIMBATORE-EOU-2026-11-03.xls"),
+    (KIND_ORDER, "2. Order Status Report", "e.g. OrderStatusReport-03-11-2026.xlsx"),
+    (KIND_BOM, "3. Exploded BOM Report", "e.g. Exploded_bom-20-08-2026.xlsx"),
+]
 files: dict[str, tuple[str, bytes]] = {}
-unknown: list[str] = []
-duplicates: list[str] = []
-if uploads:
-    with st.spinner("Recognising files..."):
-        for up in uploads:
-            data = up.getvalue()
-            kind = _identify(data)
-            if kind is None:
-                unknown.append(up.name)
-            elif kind in files:
-                duplicates.append(f"{up.name} (another {KIND_LABELS[kind]})")
-            else:
-                files[kind] = (up.name, data)
-
-cols = st.columns(4)
-for col, kind in zip(cols, [KIND_STOCK, KIND_ORDER, KIND_BOM, KIND_PREVIOUS]):
+problems = False
+cols = st.columns(3)
+for col, (kind, label, hint) in zip(cols, SLOTS):
     with col:
-        if kind in files:
-            st.success(f"**{KIND_LABELS[kind]}**  \n{files[kind][0]}", icon="✅")
-        elif kind == KIND_PREVIOUS:
-            st.info(f"**{KIND_LABELS[kind]}**  \nnot added", icon="➖")
+        up = st.file_uploader(label, type=["xlsx", "xls", "xlsm"], key=f"upload_{kind}", help=hint)
+        if up is None:
+            st.caption("⏳ Waiting for file")
+            continue
+        data = up.getvalue()
+        found = _identify(data)
+        if found == kind:
+            files[kind] = (up.name, data)
+            st.caption(f"✅ {KIND_LABELS[kind]} recognised")
+        elif found in (KIND_STOCK, KIND_ORDER, KIND_BOM):
+            problems = True
+            st.error(f"This looks like the **{KIND_LABELS[found]}**. Please upload it in the "
+                     f"'{dict((k, l) for k, l, _ in SLOTS)[found]}' box.")
         else:
-            st.warning(f"**{KIND_LABELS[kind]}**  \nwaiting for file", icon="⏳")
-for name in unknown:
-    st.error(f"'{name}' was not recognised as one of the input reports. Please check you exported "
-             "the right report from the ERP.")
-for name in duplicates:
-    st.warning(f"Ignored {name}: only one file of each report is used.")
+            problems = True
+            st.error(f"'{up.name}' is not a {KIND_LABELS[kind]}. Please check you exported the right "
+                     "report from the ERP.")
 
 required = [KIND_STOCK, KIND_ORDER, KIND_BOM]
-if not all(k in files for k in required):
+if problems or not all(k in files for k in required):
+    if not problems:
+        st.info("Upload all three reports to build the Tag & Env Stock report.", icon="📂")
     st.stop()
 
 # ---------------------------------------------------------------------------
 # Build the report
 # ---------------------------------------------------------------------------
-digest = _digest(*(files[k][1] for k in required), files.get(KIND_PREVIOUS, ("", None))[1])
+digest = _digest(*(files[k][1] for k in required))
 try:
     with st.status("Building the report...", expanded=False) as status:
         status.write("Reading Stock Summary...")
@@ -145,9 +131,8 @@ try:
         orders = _orders(files[KIND_ORDER][1])
         status.write("Reading Exploded BOM (large file, may take a few seconds)...")
         bom = _bom(files[KIND_BOM][1])
-        previous = _previous(files[KIND_PREVIOUS][1]) if KIND_PREVIOUS in files else None
         status.write("Applying business rules...")
-        report = build_report(stock, orders, bom, previous)
+        report = build_report(stock, orders, bom)
         status.update(label="Report ready", state="complete")
 except InputError as exc:
     st.error(str(exc))

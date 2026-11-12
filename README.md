@@ -7,10 +7,10 @@ Builds the weekly **Tag & Env Stock** report automatically from three ERP export
 | **Stock Summary Report** (`StockSummaryReport-…xls/xlsx`) | Envelope and tag stock in kg, and the machine line of each item |
 | **Order Status Report** (`OrderStatusReport-…xlsx`) | Open orders → the *Remarks* column |
 | **Exploded BOM Report** (`Exploded_bom-…xlsx`) | Which envelope / tag each finished good uses, and pieces per CFC |
-| *Previous Tag & Env Stock report* (optional) | Keeps last week's *Running* / *Order Received* choice |
 
-Users drop the files on the page (any order – each file is recognised by its columns), check the
-preview, optionally change a remark, and download the Excel file.
+The page has three upload boxes, one per report. Each file is checked by its columns, so a file put
+in the wrong box is flagged straight away. Once all three are in, the report is built automatically;
+check the preview, optionally change a remark, and download the Excel file.
 
 ## Output workbook
 
@@ -54,8 +54,7 @@ go to the *Ghana & AB & AG Stock* sheet instead of the main sheet.
 4. **Leftover Stock** – nothing pending (no order, or orders fully covered by ready stock)
 
 The difference between *Running* and *Order Received* depends on the shop-floor plan, which is not in
-the three files, so: (a) add last week's report and its Running / Order Received choice is kept for
-blends that are still on order, and (b) any remark can be changed in the preview before downloading.
+the three files, so any remark can be changed in the preview before downloading.
 
 ## Data checks (Validation sheet / *Data checks* tab)
 
