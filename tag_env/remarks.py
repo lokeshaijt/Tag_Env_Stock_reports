@@ -96,38 +96,67 @@ def suggest_remark(row: ReportRow, o: RowOrders) -> tuple[str, str]:
     return C.REMARK_LEFTOVER, "No open order uses this item"
 
 
-def pack_sizes(grouping: Grouping, bom: pd.DataFrame, orders_by_row: dict[str, RowOrders]):
-    """Pieces of each envelope/tag per CFC, per (row key, column).
+def pack_sizes(grouping: Grouping, bom: pd.DataFrame, orders_by_row: dict[str, RowOrders],
+               case_lines: pd.DataFrame | None = None):
+    """Pieces of each envelope/tag per case (CFC), per (row key, column).
 
-    Taken from the BOM line of the FG with the biggest open order; when none of
-    the FGs is on order, the most common CFC pack size is used.
+    Which BOM line is used:
+      1. the finished good that is on open order (most common value if several,
+         the standard/smaller pack on a tie);
+      2. otherwise the blend's own case pack (FG with the same blend name, e.g.
+         "AL FINA GREEN TEA LEMON 24/25"), not gift boxes or mixed packs (same
+         tie rule);
+      3. otherwise the largest case pack listed.
+    BOM quantities below 1 piece are data errors and are ignored. A tag without
+    a usable BOM value takes the value of its paired envelope on the same row
+    (one tag per tea bag), and this is reported.
+    Returns (sizes, issues).
     """
-    pcs = bom[(bom["uom"].isin(["PCS", ""])) & (bom["qty"] > 0)]
+    pcs = bom[(bom["uom"].isin(["PCS", ""])) & (bom["qty"] >= 1)]
     cfc = pcs[pcs["fg_uom"].isin(["CFC", "CASE", ""])]
     by_item = {k: v for k, v in cfc.groupby("item_norm")}
+    if case_lines is not None and not case_lines.empty:
+        cl = case_lines[case_lines["qty"] >= 1]
+        for k, v in cl.groupby("item_norm"):
+            by_item.setdefault(k, v)          # only for items the Exploded BOM does not list
     sizes: dict[tuple[str, str], float] = {}
+    issues: list[dict] = []
 
-    def size_for(item_norms: list[str], ordered: set[str]):
+    def size_for(item_norms: list[str], ordered: set[str], family: str | None):
         frames = [by_item[i] for i in item_norms if i in by_item]
         if not frames:
             return None
         df = pd.concat(frames)
-        hit = df[df["fg"].isin(ordered)]
+        hit = df[df["fg"].isin(ordered) | df["fg_norm"].isin({o.upper() for o in ordered})]
+        def common(q: pd.Series) -> float:
+            counts = q.value_counts()          # most used pack size; tie -> standard (smaller) pack
+            return float(min(v for v, n in counts.items() if n == counts.max()))
         if not hit.empty:
-            return float(hit["qty"].mode().iloc[0])
-        return float(df["qty"].mode().iloc[0])
+            return common(hit["qty"])
+        if family:
+            own = df[df["fg_norm"].map(fg_family_key) == family]
+            if not own.empty:
+                return common(own["qty"])
+        return float(df["qty"].max())
 
     for row in grouping.rows:
         ordered = set(orders_by_row.get(row.key, RowOrders([], 0, 0, 0, 0)).fgs)
         for col, ls in row.lines.items():
-            s = size_for([l.item_norm for l in ls], ordered)
+            s = size_for([l.item_norm for l in ls], ordered, row.key)
             if s:
                 sizes[(row.key, col)] = s
+        for tag_col, env_col in C.TAG_PAIRED_ENV.items():
+            if row.has(tag_col) and (row.key, tag_col) not in sizes and (row.key, env_col) in sizes:
+                sizes[(row.key, tag_col)] = sizes[(row.key, env_col)]
+                issues.append({"Check": "Tag pack size from envelope", "Item": ", ".join(
+                    l.item for l in row.lines[tag_col]),
+                    "Detail": f"No usable BOM value for this tag; used its envelope's "
+                              f"{sizes[(row.key, env_col)]:g} pieces per case."})
     for st in grouping.shared_tags:
         ordered = set()
         for k in st.member_keys:
             ordered |= set(orders_by_row.get(k, RowOrders([], 0, 0, 0, 0)).fgs)
-        s = size_for([l.item_norm for l in st.lines], ordered)
+        s = size_for([l.item_norm for l in st.lines], ordered, None)
         if s:
             sizes[("SHARED::" + st.lines[0].item_norm, st.column)] = s
-    return sizes
+    return sizes, issues

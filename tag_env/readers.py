@@ -124,6 +124,9 @@ class BomData:
     sheet_used: str
     run_date: str | None
     warnings: list[str] = field(default_factory=list)
+    # pieces of each ENV/TAG item per case, exploded from the single-level "BOM" sheet
+    # (used only for items the Exploded BOM sheet does not list)
+    case_lines: pd.DataFrame | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -284,8 +287,52 @@ def read_exploded_bom(data: bytes) -> BomData:
     for v in raw.iloc[: max(hdr, 1)].values.ravel().tolist():
         if v is not None and "run date" in str(v).lower():
             run_date = str(v).split("-", 1)[-1].strip()
+    case_lines = None
+    routing = [f for f in wb.find_sheets(["BOM_Name", "Item_Name", "Qty"]) if f[0] != name]
+    if routing:
+        rname, rhdr = routing[0]
+        case_lines = _explode_routing_bom(wb.read(rname), rhdr)
     return BomData(lines=df.reset_index(drop=True), sheet_used=name, run_date=run_date,
-                   warnings=warnings)
+                   warnings=warnings, case_lines=case_lines)
+
+
+def _explode_routing_bom(raw: pd.DataFrame, hdr: int) -> pd.DataFrame:
+    """Pieces of each ENV / TAG item per case (CFC) from the single-level BOM grid.
+
+    A case either lists the envelope/tag directly, or lists cartons whose own
+    BOM lists the envelope/tag: pieces per case = cartons per case x pieces per
+    carton. Default BOM versions are preferred.
+    """
+    header = [_norm_header(v) for v in raw.iloc[hdr].tolist()]
+    ix = {k: _col_index(header, *names) for k, names in {
+        "parent": ("BOM_Name",), "group": ("Item Group",), "child": ("Item_Name",),
+        "qty": ("Qty",), "uom": ("UOM_Name",), "default": ("Is Default",)}.items()}
+    if any(ix[k] is None for k in ("parent", "child", "qty")):
+        return pd.DataFrame(columns=["fg", "fg_norm", "item_norm", "qty", "uom", "fg_uom"])
+    body = raw.iloc[hdr + 1:]
+    df = pd.DataFrame({
+        "parent": body.iloc[:, ix["parent"]].map(norm_name),
+        "group": body.iloc[:, ix["group"]].astype(str).str.upper() if ix["group"] is not None else "",
+        "child": body.iloc[:, ix["child"]].map(norm_name),
+        "qty": _to_number(body.iloc[:, ix["qty"]]),
+        "uom": body.iloc[:, ix["uom"]].astype(str).str.upper() if ix["uom"] is not None else "PCS",
+        "default": (body.iloc[:, ix["default"]].astype(str).str.upper() == "Y")
+        if ix["default"] is not None else True,
+    })
+    df = df[(df["parent"] != "") & (df["qty"] > 0)].sort_values("default", ascending=False)
+    pm = df["child"].str.startswith(("ENV ", "TAG ")) & (df["uom"] == "PCS")
+    per_parent = df[pm].drop_duplicates(["parent", "child"])
+    pcs = {p: dict(zip(g["child"], g["qty"])) for p, g in per_parent.groupby("parent")}
+    cases = df[df["group"].str.endswith("-CFC")]
+    out: dict[tuple[str, str], float] = {}
+    for parent, child, qty, is_pm in zip(cases["parent"], cases["child"], cases["qty"], pm.loc[cases.index]):
+        if is_pm:
+            out.setdefault((parent, child), qty)
+        elif child in pcs and child != parent:
+            for item, q in pcs[child].items():
+                out.setdefault((parent, item), qty * q)
+    return pd.DataFrame([{"fg": p, "fg_norm": p, "item_norm": i, "qty": q, "uom": "PCS", "fg_uom": "CFC"}
+                         for (p, i), q in out.items()])
 
 
 # ---------------------------------------------------------------------------

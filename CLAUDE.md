@@ -17,6 +17,7 @@ Pushing to `main` redeploys the Streamlit app (Streamlit Community Cloud watches
 
 - Streamlit app (`app.py`) that builds the Tag & Env Stock report from three uploads:
   Stock Summary, Order Status and Exploded BOM reports.
-- The downloaded Excel must keep the layout of the manually prepared report: only the sheets
-  **Tag & Env Stock** and **Ghana & AB & AG Stock**.
+- The downloaded Excel is the reference workbook in `tag_env/templates/` with only its data
+  replaced (same sheets, visibility and formatting). `tag_env/format_check.py` and the tests
+  must report no differences from it.
 - Business configuration lives in `tag_env/config.py`; rules are documented in `README.md`.

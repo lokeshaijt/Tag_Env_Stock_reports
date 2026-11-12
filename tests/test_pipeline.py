@@ -137,17 +137,39 @@ def test_export_and_checks(report):
 def test_excel_layout(report):
     data = report.to_excel(remarks={"KHAIMA MANGO": "Yet to Plan"})
     wb = openpyxl.load_workbook(io.BytesIO(data))
-    assert wb.sheetnames == ["Tag & Env Stock", "Ghana & AB & AG Stock"]
-    ws = wb["Tag & Env Stock"]
+    # same sheets, order and visibility as the reference report
+    assert wb.sheetnames == ["Tag & Env Stock (2)", "Env & Tag Stock", "Tag & Env Stock",
+                             "Ghana & AB & AG Stock"]
+    assert [wb[n].sheet_state for n in wb.sheetnames] == ["hidden", "visible", "hidden", "visible"]
+    ws = wb["Tag & Env Stock (2)"]
     assert [ws[c].value for c in ("A2", "B2", "D2", "G2", "J2", "L2", "O2", "R2", "S2")] == \
         ["Brand", "Constanta", "C250", "MD20", "Perfecta ", "MD20 HS", "Maisa", "Perfecta/PK45 Tag", "Remarks"]
-    assert ws.freeze_panes == "B4"
     names = [ws.cell(row=r, column=1).value for r in range(4, ws.max_row + 1)]
     assert names[-2:] == ["TOTAL", "Grand Total"]
     khaima = names.index("ENV KHAIMA MANGO DC TBGS") + 4
     assert ws.cell(row=khaima, column=19).value == "Yet to Plan"   # user override kept
-    merged = [str(m) for m in ws.merged_cells.ranges]
-    assert any(m.startswith("E") and ":" in m for m in merged)      # shared tag merged
-    cached = openpyxl.load_workbook(io.BytesIO(data), data_only=True)["Tag & Env Stock"]
-    grand = cached.cell(row=ws.max_row, column=2).value
-    assert grand == pytest.approx(sum(r.qty(c) for r in report.rows for c in r.lines) + 141.75)
+    assert any(str(m).startswith("E") for m in ws.merged_cells.ranges if m.min_row > 3)  # shared tag
+    assert wb["Tag & Env Stock"]["A5"].value != ws["A5"].value     # short names on this sheet
+    assert not wb._external_links                                  # no links to other workbooks
+
+
+def test_make_cases_formula(report):
+    data = report.to_excel()
+    ws = openpyxl.load_workbook(io.BytesIO(data))["Env & Tag Stock"]
+    assert ws["E4"].value == 1740 and ws["O4"].value == 1525 and ws["C4"].value == 10780
+    rows = {ws.cell(row=r, column=1).value: r for r in range(5, ws.max_row)}
+    r = rows["ENV GV CLOVE DC C250 TBGS".replace("DC C250 TBGS", "")]
+    # (KG x conversion factor) / pieces per case from the BOM (600 for GV CLOVE 24/25)
+    assert ws[f"E{r}"].value == f"=(D{r}*$E$4)/600"
+    assert ws[f"F{r}"].value == f"=MAX(C{r},E{r})"
+    cases = report.make_cases_frame()
+    clove = cases[cases["Item"] == "ENV GV CLOVE DC C250 TBGS"].iloc[0]
+    assert clove["C250 Env Cases"] == round(97.22 * 1740 / 600)
+    # no BOM value -> left empty, not a wrong number
+    r = rows["ENV AL FINA "]
+    assert ws[f"E{r}"].value is None
+
+
+def test_format_matches_reference(report):
+    from tag_env.format_check import compare
+    assert compare(report.to_excel()) == []

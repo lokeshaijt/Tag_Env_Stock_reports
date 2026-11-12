@@ -5,3 +5,4 @@ __pycache__/
 *.xlsx
 *.xls
 !tests/fixtures/*.xlsx
+!tag_env/templates/*.xlsx

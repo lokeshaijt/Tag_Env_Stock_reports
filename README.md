@@ -10,19 +10,39 @@ Builds the weekly **Tag & Env Stock** report automatically from three ERP export
 
 The page has three upload boxes, one per report. Each file is checked by its columns, so a file put
 in the wrong box is flagged straight away. Once all three are in, the report is built automatically;
-check the preview, optionally change a remark, and download the Excel file.
+click **Generate Report**, check the preview, optionally change a remark, and download the Excel file.
 
 ## Output workbook
 
-Same sheets and layout as the manually prepared report:
+The reference report (`tag_env/templates/Tag_Env_Stock_Template.xlsx`, the manually prepared
+*Tag_Env_Stock_as_on_28-10-26*) is used as the template. Sheet names, order and visibility, header
+rows, merged headers, fonts, fills, borders, number formats, column widths, row heights, frozen
+panes and print settings all come from it; only the data rows are replaced, each new cell taking the
+style of the template's data cells. Links to other workbooks are removed.
 
 | Sheet | Contents |
 |---|---|
-| **Tag & Env Stock** | Date in A1; Brand / Constanta / C250 / MD20 / Perfecta / MD20 HS / Maisa / Perfecta-PK45 Tag columns with yellow spacer columns; Remarks; `TOTAL` (SUBTOTAL formulas) and `Grand Total`; panes frozen at B4; filter on the Remarks column. Tags shared by several blends (e.g. `TAG GV FLAVOUR DC C250 TBGS`) are shown once in a cell merged across those blends. |
+| **Env & Tag Stock** (visible) | Make Cases per machine line: kg, `=(kg × factor in row 4) / BOM pieces per case`, *Max Can Make*, total `=F+L+P+T` (as in the reference), Remarks. Kg totals in the last row. |
+| **Tag & Env Stock** (hidden, short names) and **Tag & Env Stock (2)** (hidden, full names) | Stock in kg by machine line, shared tags merged across blends, Remarks, `TOTAL` (SUBTOTAL) and `Grand Total`. |
 | **Ghana & AB & AG Stock** | Ghana, Abidjan and Angola stock with totals and grand total. |
 
-Formulas are written together with their calculated values, so numbers show correctly even in
-viewers that do not recalculate.
+### Make Cases
+
+`Make Cases = (Available KG × Conversion Factor) / Exploded BOM value`
+
+* **Conversion factor** – per machine line, from the *Conversion Round Off* chart
+  (`config.DEFAULT_CONVERSIONS`, editable in the app sidebar), written in row 4 above each
+  Make Cases column. Each machine line uses its own factor.
+* **Exploded BOM value** – pieces of that envelope/tag per case (CFC), read from the uploaded BOM file,
+  never hard-coded: the FG on open order first; otherwise the blend's own case pack (standard pack
+  on a tie); otherwise the largest case pack. Items missing from the *Exploded BOM* sheet are looked
+  up in the file's single-level *BOM* sheet (cartons per case × pieces per carton). BOM quantities
+  below one piece are ignored as data errors; a tag without a usable value takes its envelope's
+  value on the same row (reported).
+* Missing factor or BOM value → the cell is left empty and listed in *Data checks*.
+
+The app also compares every generated workbook with the template (*Format check* tab) and the tests
+assert there are no differences.
 
 ## Business rules
 
@@ -56,7 +76,7 @@ go to the *Ghana & AB & AG Stock* sheet instead of the main sheet.
 The difference between *Running* and *Order Received* depends on the shop-floor plan, which is not in
 the three files, so any remark can be changed in the preview before downloading.
 
-## Data checks (*Data checks* tab in the app, not in the Excel file)
+## Data checks (*Data checks* tab in the app)
 
 * items whose machine line is unknown (left out, with their kg)
 * duplicate items in the Stock Summary (quantities added) and negative stock
@@ -87,16 +107,19 @@ Tests: `python -m pytest -q`
 ## Changing the rules
 
 Everything a planner may want to change is in [`tag_env/config.py`](tag_env/config.py): machine-line
-mapping, export sections and extra export items, and the words stripped to build the family key.
+mapping, conversion factors, export sections and extra export items, and the words stripped to
+build the family key.
 
 ## Project layout
 
 ```
-app.py                  Streamlit UI
-tag_env/readers.py      robust readers for the 3 ERP exports (.xls/.xlsx/HTML, header detection)
-tag_env/grouping.py     stock lines -> report rows, shared tags, export stock
-tag_env/remarks.py      order linking, remarks, pack sizes
-tag_env/writer.py       Excel output (XlsxWriter) in the manual report's format
-tag_env/pipeline.py     glue + validation
-tests/                  synthetic end-to-end tests
+app.py                         Streamlit UI (3 uploads, Generate Report, preview, download)
+tag_env/readers.py             readers for the 3 ERP exports (.xls/.xlsx/HTML, header detection)
+tag_env/grouping.py            stock lines -> report rows, shared tags, export stock
+tag_env/remarks.py             order linking, remarks, BOM pieces per case
+tag_env/make_cases.py          Make Cases calculation
+tag_env/template_writer.py     fills the reference workbook (openpyxl)
+tag_env/format_check.py        compares the output with the reference format
+tag_env/templates/             the reference Tag & Env Stock workbook
+tests/                         synthetic end-to-end tests
 ```

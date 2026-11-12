@@ -1,18 +1,18 @@
 """Tag & Env Stock Report - Streamlit app.
 
-Upload the Stock Summary, Order Status and Exploded BOM reports; the app builds
-the Tag & Env Stock report in the same layout as the manual Excel and offers it
-for download.
+Upload the Stock Summary, Order Status and Exploded BOM reports, click
+Generate Report, check the preview and download the report. The Excel file is
+the reference Tag & Env Stock workbook with only its data replaced.
 """
 from __future__ import annotations
 
 import hashlib
 from datetime import date
 
-import pandas as pd
 import streamlit as st
 
 from tag_env import config as C
+from tag_env.format_check import compare
 from tag_env.pipeline import build_report
 from tag_env.readers import (KIND_BOM, KIND_LABELS, KIND_ORDER, KIND_STOCK, InputError,
                              identify, read_exploded_bom, read_order_status, read_stock_summary)
@@ -43,6 +43,11 @@ def _bom(data: bytes):
     return read_exploded_bom(data)
 
 
+@st.cache_data(show_spinner=False, max_entries=6)
+def _format_check(xlsx: bytes) -> list[str]:
+    return compare(xlsx)
+
+
 def _digest(*parts: bytes | None) -> str:
     h = hashlib.sha1()
     for p in parts:
@@ -51,34 +56,37 @@ def _digest(*parts: bytes | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Header
+# Header and sidebar
 # ---------------------------------------------------------------------------
 st.title("📦 Tag & Env Stock Report")
-st.write(
-    "Upload the **Stock Summary**, **Order Status** and **Exploded BOM** reports exported from the "
-    "ERP. The report is built automatically, in the same format as the manual Excel report."
-)
+st.write("Upload the three ERP reports and click **Generate Report**. The Excel file has the same "
+         "sheets and format as the manual Tag & Env Stock report.")
 
 with st.sidebar:
     st.header("How to use")
     st.markdown(
-        "1. Upload each report in its own box: Stock Summary, Order Status, Exploded BOM.\n"
-        "2. Check the preview and, if needed, change a **Remarks** value.\n"
-        "3. Click **Download report**."
+        "1. Upload each report in its own box.\n"
+        "2. Click **Generate Report**.\n"
+        "3. Check the preview; change a **Remarks** value if needed.\n"
+        "4. Click **Download report**."
     )
     st.divider()
+    with st.expander("Conversion factors (pcs per kg)"):
+        st.caption("From the Conversion Round Off chart. Used in the Make Cases formula: "
+                   "(KG × conversion factor) ÷ Exploded BOM pieces per case.")
+        conversions = {k: float(st.number_input(k, min_value=1, value=int(v), step=10, key=f"conv_{k}"))
+                       for k, v in C.DEFAULT_CONVERSIONS.items()}
     st.divider()
     st.caption("Remarks rules")
     st.markdown(
         "- **Running** – open order still to produce, production already started\n"
         "- **Order Received** – open order still to produce, nothing made yet\n"
         "- **Multiline Stock** – nothing to produce; stock on 2+ envelope lines\n"
-        "- **Leftover Stock** – nothing to produce\n\n"
-        "Any remark can be changed in the preview before downloading."
+        "- **Leftover Stock** – nothing to produce"
     )
 
 # ---------------------------------------------------------------------------
-# Upload - one box per input report
+# 1. Upload - one box per input report, each validated
 # ---------------------------------------------------------------------------
 SLOTS = [
     (KIND_STOCK, "1. Stock Summary Report", "e.g. StockSummaryReport-COIMBATORE-EOU-2026-11-03.xls"),
@@ -87,8 +95,7 @@ SLOTS = [
 ]
 files: dict[str, tuple[str, bytes]] = {}
 problems = False
-cols = st.columns(3)
-for col, (kind, label, hint) in zip(cols, SLOTS):
+for col, (kind, label, hint) in zip(st.columns(3), SLOTS):
     with col:
         up = st.file_uploader(label, type=["xlsx", "xls", "xlsm"], key=f"upload_{kind}", help=hint)
         if up is None:
@@ -105,87 +112,86 @@ for col, (kind, label, hint) in zip(cols, SLOTS):
                      f"'{dict((k, l) for k, l, _ in SLOTS)[found]}' box.")
         else:
             problems = True
-            st.error(f"'{up.name}' is not a {KIND_LABELS[kind]}. Please check you exported the right "
-                     "report from the ERP.")
+            st.error(f"'{up.name}' is not a {KIND_LABELS[kind]} (the expected columns were not found). "
+                     "Please check you exported the right report from the ERP.")
 
 required = [KIND_STOCK, KIND_ORDER, KIND_BOM]
-if problems or not all(k in files for k in required):
-    if not problems:
-        st.info("Upload all three reports to build the Tag & Env Stock report.", icon="📂")
-    st.stop()
+ready = not problems and all(k in files for k in required)
+digest = _digest(*(files[k][1] for k in required)) if ready else None
 
 # ---------------------------------------------------------------------------
-# Build the report
+# 2. Generate
 # ---------------------------------------------------------------------------
-digest = _digest(*(files[k][1] for k in required))
+clicked = st.button("▶️ Generate Report", type="primary", disabled=not ready, width="stretch")
+if not ready:
+    st.info("Upload all three reports to enable **Generate Report**.", icon="📂")
+    st.stop()
+if clicked:
+    st.session_state["generated"] = digest
+    st.session_state["remarks"] = {}
+if st.session_state.get("generated") != digest:
+    st.stop()
+
 try:
-    with st.status("Building the report...", expanded=False) as status:
+    with st.status("Generating the report...", expanded=False) as status:
         status.write("Reading Stock Summary...")
         stock = _stock(files[KIND_STOCK][1], files[KIND_STOCK][0])
         status.write("Reading Order Status...")
         orders = _orders(files[KIND_ORDER][1])
-        status.write("Reading Exploded BOM (large file, may take a few seconds)...")
+        status.write("Reading Exploded BOM (large file, up to ~30 seconds the first time)...")
         bom = _bom(files[KIND_BOM][1])
-        status.write("Applying business rules...")
+        status.write("Matching items, orders and BOM; calculating Make Cases...")
         report = build_report(stock, orders, bom)
-        status.update(label="Report ready", state="complete")
+        status.update(label="Report generated", state="complete")
 except InputError as exc:
     st.error(str(exc))
     st.stop()
 except Exception as exc:  # pragma: no cover - shown to the user
-    st.error("Something went wrong while processing the files. Please check that the three files are "
-             f"the standard ERP exports.\n\nTechnical detail: {exc}")
+    st.error("Something went wrong while processing the files. Please check that they are the "
+             f"standard ERP exports.\n\nTechnical detail: {exc}")
     st.stop()
 
-if st.session_state.get("digest") != digest:
-    st.session_state["digest"] = digest
-    st.session_state["remarks"] = {}
-
+# ---------------------------------------------------------------------------
+# 3. Summary
+# ---------------------------------------------------------------------------
 report_date = report.report_date or date.today()
 totals = report.column_totals()
-env_total = sum(v for k, v in totals.items() if k in C.ENV_COLUMNS)
-tag_total = sum(v for k, v in totals.items() if k in C.TAG_COLUMNS)
-export_total = sum(e.qty for e in report.export_lines)
-
+issues = report.issues_frame()
 m = st.columns(5)
 m[0].metric("Stock date", report_date.strftime("%d-%m-%Y"))
 m[1].metric("Report rows", len(report.rows))
-m[2].metric("Envelope stock (kg)", f"{env_total:,.0f}")
-m[3].metric("Tag stock (kg)", f"{tag_total:,.0f}")
-m[4].metric("Ghana / Abidjan / Angola (kg)", f"{export_total:,.0f}")
+m[2].metric("Envelope stock (kg)", f"{sum(v for k, v in totals.items() if k in C.ENV_COLUMNS):,.0f}")
+m[3].metric("Tag stock (kg)", f"{sum(v for k, v in totals.items() if k in C.TAG_COLUMNS):,.0f}")
+m[4].metric("Ghana / Abidjan / Angola (kg)", f"{sum(e.qty for e in report.export_lines):,.0f}")
 
-issues = report.issues_frame()
-blocking = issues[issues["Check"].isin(["Unknown machine line", "Order FG not in BOM"])]
-if len(issues):
-    st.info(f"{len(issues)} data check(s) to review - see the **Data checks** tab. "
-            + (f"{len(blocking)} need attention." if len(blocking) else ""), icon="🔎")
+summary = issues["Check"].value_counts()
+if len(summary):
+    st.warning("Processing summary - " + ", ".join(f"{n} × {k}" for k, n in summary.items())
+               + ". Details in the **Data checks** tab.", icon="🔎")
+else:
+    st.success("All inputs matched cleanly.", icon="✅")
 
 download_slot = st.container()
 
 # ---------------------------------------------------------------------------
-# Preview
+# 4. Preview
 # ---------------------------------------------------------------------------
-tab_main, tab_export, tab_checks, tab_info = st.tabs(
-    ["Tag & Env Stock", "Ghana & AB & AG Stock", f"Data checks ({len(issues)})", "Sources"])
+tab_make, tab_stock, tab_export, tab_checks, tab_format = st.tabs(
+    ["Env & Tag Stock (Make Cases)", "Tag & Env Stock", "Ghana & AB & AG Stock",
+     f"Data checks ({len(issues)})", "Format check"])
 
-with tab_main:
+saved = st.session_state.setdefault("remarks", {})
+
+with tab_stock:
     df = report.preview_frame()
-    saved = st.session_state["remarks"]
     df["Remarks"] = [saved.get(k, r) for k, r in zip(df["_key"], df["Remarks"])]
-    remark_filter = st.multiselect("Show remarks", C.REMARK_CHOICES[:4], default=C.REMARK_CHOICES[:4])
-    search = st.text_input("Search item", placeholder="e.g. JUMBO")
-    view = df[df["Remarks"].isin(remark_filter) | ~df["Remarks"].isin(C.REMARK_CHOICES[:4])]
-    if search:
-        view = view[view["Item"].str.contains(search, case=False, regex=False)]
-    num_cols = [c for c in df.columns if c not in ("Item", "Remarks", "Why", "_key")]
+    search = st.text_input("Search item", placeholder="e.g. JUMBO", key="search_stock")
+    view = df[df["Item"].str.contains(search, case=False, regex=False)] if search else df
+    num_cols = [c for c in df.columns if c not in ("Item", "Remarks", "Why", "_key", "Pending CFC")]
     edited = st.data_editor(
-        view,
-        hide_index=True,
-        width="stretch",
-        height=560,
+        view, hide_index=True, width="stretch", height=560,
         disabled=[c for c in df.columns if c != "Remarks"],
-        column_order=["Item"] + [c for c in num_cols if c != "Pending CFC"] +
-                     ["Remarks", "Pending CFC", "Why"],
+        column_order=["Item"] + num_cols + ["Remarks", "Pending CFC", "Why"],
         column_config={
             "Item": st.column_config.TextColumn("Item", width="large", pinned=True),
             "Remarks": st.column_config.SelectboxColumn("Remarks", options=C.REMARK_CHOICES,
@@ -195,37 +201,50 @@ with tab_main:
         },
         key=f"editor_{digest}",
     )
-    for k, r, orig in zip(edited["_key"], edited["Remarks"],
-                          df.set_index("_key").loc[edited["_key"], "Remarks"]):
-        if r != orig or k in saved:
+    original = df.set_index("_key")["Remarks"]
+    for k, r in zip(edited["_key"], edited["Remarks"]):
+        if r != original[k] or k in saved:
             saved[k] = r
-    st.caption("Shared tags (e.g. TAG GV FLAVOUR) are shown on the first row of their group; in the "
-               "Excel file the cell is merged across the group, as in the manual report.")
+    st.caption("Remarks changed here are written to both sheets of the downloaded report.")
+
+with tab_make:
+    mc = report.make_cases_frame(conversions)
+    mc["Remarks"] = [saved.get(r.key, r.remark) for r in report.rows]
+    st.caption("Make Cases = (KG × machine-line conversion factor) ÷ pieces per case from the "
+               "Exploded BOM. Empty = conversion factor or BOM value missing (see Data checks).")
+    st.dataframe(mc, hide_index=True, width="stretch", height=560,
+                 column_config={"Item": st.column_config.TextColumn("Item", pinned=True)})
 
 with tab_export:
     ex = report.export_frame()
     if ex.empty:
         st.write("No Ghana / Abidjan / Angola stock in this Stock Summary.")
-    else:
-        for section, grp in ex.groupby("Section", sort=False):
-            st.subheader(section.title())
-            st.dataframe(grp.drop(columns="Section"), hide_index=True, width="stretch")
+    for section, grp in ex.groupby("Section", sort=False):
+        st.subheader(section.title())
+        st.dataframe(grp.drop(columns="Section"), hide_index=True, width="stretch")
 
 with tab_checks:
     if issues.empty:
         st.success("No data issues found.")
     else:
-        st.caption("These do not stop the report; they show where the inputs did not match cleanly. "
-                   "They are shown here only; the downloaded report contains just the report sheets.")
+        st.caption("These do not stop the report; they show where the inputs did not match cleanly.")
         st.dataframe(issues, hide_index=True, width="stretch", height=480)
-
-with tab_info:
-    st.json(report.sources)
+    st.json(report.sources, expanded=False)
 
 # ---------------------------------------------------------------------------
-# Download
+# 5. Excel + format check + download
 # ---------------------------------------------------------------------------
-xlsx = report.to_excel(remarks=st.session_state["remarks"])
+xlsx = report.to_excel(remarks=saved, conversions=conversions)
+with tab_format:
+    diffs = _format_check(xlsx)
+    if diffs:
+        st.error(f"{len(diffs)} formatting difference(s) from the reference report:")
+        st.write(diffs)
+    else:
+        st.success("The generated workbook matches the reference Tag & Env Stock report: same sheets "
+                   "(and visibility), column widths, frozen panes, headers and merged headers, and the "
+                   "same font, fill, border, alignment and number format on every data and total cell.")
+
 download_slot.download_button(
     "⬇️ Download report",
     data=xlsx,

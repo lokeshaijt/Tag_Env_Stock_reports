@@ -11,7 +11,8 @@ from .grouping import ExportLine, ReportRow, SharedTag, build_rows, family_key, 
 from .readers import (BomData, OrderData, StockData, norm_name, read_exploded_bom,
                       read_order_status, read_previous_remarks, read_stock_summary)
 from .remarks import RowOrders, link_orders, pack_sizes, suggest_remark
-from .writer import build_workbook
+from . import make_cases
+from .template_writer import build_workbook
 
 
 @dataclass
@@ -77,6 +78,31 @@ class Report:
                               "Tag Kgs": e.qty if e.column == "tag" else 0.0}
                              for e in self.export_lines])
 
+    def make_cases_frame(self, conversions: dict[str, float] | None = None) -> pd.DataFrame:
+        """Env & Tag Stock sheet as a DataFrame (same numbers as the Excel formulas)."""
+        conv = dict(C.DEFAULT_CONVERSIONS)
+        conv.update(conversions or {})
+        cells, _ = make_cases.calculate(self, conv)
+        recs = []
+        for i, r in enumerate(self.rows):
+            rec = {"Item": r.name}
+            total = 0.0
+            for title, cols, max_col in make_cases.BLOCKS:
+                for cid, _, _ in cols:
+                    kind = "Tag" if C.MAIN_COLUMNS[cid][3] == "tag" else "Env"
+                    c = cells[(i, cid)]
+                    rec[f"{title.strip()} {kind} Kgs"] = None if c.covered else round(c.kg, 2)
+                    rec[f"{title.strip()} {kind} Cases"] = (None if c.covered or c.cases is None
+                                                           else round(c.cases, 0))
+                mx = make_cases.block_max(cells, i, cols)
+                rec[f"{title.strip()} Max"] = round(mx, 0)
+                if max_col in make_cases.TOTAL_OF:
+                    total += mx
+            rec["Total"] = round(total, 0)
+            rec["Remarks"] = r.remark
+            recs.append(rec)
+        return pd.DataFrame(recs)
+
     def issues_frame(self) -> pd.DataFrame:
         return pd.DataFrame(self.issues, columns=["Check", "Item", "Detail"])
 
@@ -98,7 +124,7 @@ def build_report(stock: StockData, orders: OrderData, bom: BomData,
             if prev in active and prev != row.remark:
                 row.remark = prev
                 row.remark_reason += f" (kept '{prev}' from the previous report)"
-    sizes = pack_sizes(grouping, bom.lines, orders_by_row)
+    sizes, size_issues = pack_sizes(grouping, bom.lines, orders_by_row, bom.case_lines)
 
     issues: list[dict] = []
     for src, warns in (("Stock Summary", stock.warnings), ("Order Status", orders.warnings),
@@ -107,13 +133,7 @@ def build_report(stock: StockData, orders: OrderData, bom: BomData,
             issues.append({"Check": "Input warning", "Item": src, "Detail": w})
     issues += grouping.issues
     issues += order_issues
-    for row in grouping.rows:
-        for col in row.lines:
-            if (row.key, col) not in sizes:
-                issues.append({"Check": "Pack size not in BOM", "Item": row.name,
-                               "Detail": f"No BOM line gives pieces per CFC for "
-                                         f"{', '.join(l.item for l in row.lines[col])} - "
-                                         "can-make cases left at 0 on the 'Env & Tag Stock' sheet."})
+    issues += size_issues
     # Reconciliation: every kg of mapped envelope/tag stock must land in the report
     mapped = stock.items[stock.items["machine_line"].map(C.machine_line_column).notna()]["qty"].sum()
     placed = sum(r.qty(c) for r in grouping.rows for c in C.MAIN_COLUMNS) \
@@ -122,6 +142,11 @@ def build_report(stock: StockData, orders: OrderData, bom: BomData,
         issues.insert(0, {"Check": "Reconciliation", "Item": "Stock Summary",
                           "Detail": f"Envelope/tag stock in the file is {mapped:,.2f} kg but the report "
                                     f"shows {placed:,.2f} kg."})
+    report_tmp = Report(rows=grouping.rows, shared_tags=grouping.shared_tags,
+                        export_lines=grouping.export_lines, orders=orders_by_row, sizes=sizes,
+                        issues=[], report_date=stock.report_date)
+    _, mc_issues = make_cases.calculate(report_tmp, dict(C.DEFAULT_CONVERSIONS))
+    issues += mc_issues
     if stock.report_date is None:
         issues.append({"Check": "Input warning", "Item": "Stock Summary",
                        "Detail": "Report date not found in the file - today's date is used."})
